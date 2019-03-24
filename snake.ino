@@ -1,5 +1,38 @@
 #include <SPI.h>
 
+/* Arduino Uno, connected to Sparkfun RG LED Matrix, using SPI
+ * https://www.arduino.cc/en/Main/ArduinoBoardUnoSMD
+ * https://www.sparkfun.com/products/retired/759
+ *
+ * LED matrix is mislabeled. "SPI Output" side, with female headers is actually the input.
+ *
+ * LED Connections:
+ * VCC: 5v
+ * Gnd: Gnd
+ *
+ * MOSI -> pin 11
+ * SCLK -> pin 13
+ * CS -> pin 10 (set below with csPin. Using p10 as output protects against its use as SS, which would cause arduino to listen for SPI)
+ *    When CS is low, the LED matrix pays attention to the signal being sent on MOSI, and will display that data. Set to high when
+ *    not transmitting data for the matrix (allows sending data to other SPI things attached to MOSI/SCLK).
+ *
+ * Updated to support two buttons, to turn left/right. These are connected to pin 2 & pin 3,
+ * because those two pins are configurable for external interrupts.
+ *
+ * p2 & p3 are configured with a pull-up resistor, so one side of button is connected
+ * directly to that pin, and the other side of the button is connected straight to GND.
+ *
+ * Idea: what about different levels of brightness by cycling a pixel that's "dim" on/off/on/off at
+ * some duty cycle to have it be less than 100% bright. Same idea as PWM, but driving it through the
+ * SPI protocol? IDK if SPI is fast enough that this is feasible without visible flickering, but I bet
+ * there's some refresh rate/duty cycle combos that'd work. It could be cool to have the head of the
+ * snake be brighter than the tail, and have food fade out instead of disappearing all at once.
+ *
+ * This would require bit-banging on the SPI bus, and the game loop timing can't be driven off
+ * calls to `delay()` anymore, but `millis()` and the technique used for debouncing is probably
+ * reasonable.
+ */
+
 enum PixelType {
   blank = 0,
   greenSnake = 1,
@@ -38,7 +71,7 @@ enum Direction {
 
 struct Snake {
   Position head;
-  Direction dir;
+  volatile Direction dir;
   int length;
 };
   
@@ -54,26 +87,29 @@ Snake snake = {
 int score = 0;
 
 const int sensorPin = A0;
-int inputState;
+const int leftButtonPin = 2;
+const int rightButtonPin = 3;
+volatile unsigned long lastDirChange;
 
 void setup() {
-  pinMode (csPin, OUTPUT);
+  lastDirChange = millis();
+  pinMode(csPin, OUTPUT);
+  pinMode(leftButtonPin, INPUT_PULLUP);
+  pinMode(rightButtonPin, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(leftButtonPin), debounceTurnLeft, RISING);
+  attachInterrupt(digitalPinToInterrupt(rightButtonPin), debounceTurnRight, RISING);
   SPI.begin(); 
   SPI.setClockDivider(SPI_CLOCK_DIV128);
 }
 
 void loop() {
-    digitalWrite(csPin,LOW);
-    
     moveSnake();
     moveRats();
     addFood();
     
     drawBoard();
     
-    digitalWrite(csPin,HIGH);
-    
-    delay(200);
+    delay(300); // length of time between steps in the game.
 }
 
 struct Position movePosition(struct Position pos, int dir) {
@@ -98,11 +134,35 @@ struct Position movePosition(struct Position pos, int dir) {
   return pos;
 }
 
-void moveSnake() {
-  int newInputState = analogRead(sensorPin);
-  
-  if (newInputState > 512 && inputState < 512) {
-    if (snake.dir == Down) {
+
+void debounceTurnLeft() {
+  if (abs(millis() - lastDirChange) > 75) {
+    turnLeft();
+    lastDirChange = millis();
+  }
+}
+
+void debounceTurnRight() {
+  if (abs(millis() - lastDirChange) > 75) {
+    turnRight();
+    lastDirChange = millis();
+  }
+}
+
+void turnLeft() {
+  if (snake.dir == Down) {
+      snake.dir = Right;
+    } else if (snake.dir == Right) {
+      snake.dir = Up;
+    } else if (snake.dir == Up) {
+      snake.dir = Left;
+    } else {
+      snake.dir = Down;
+    }
+}
+
+void turnRight() {
+  if (snake.dir == Down) {
       snake.dir = Left;
     } else if (snake.dir == Left) {
       snake.dir = Up;
@@ -111,9 +171,9 @@ void moveSnake() {
     } else {
       snake.dir = Down;
     }
-  }
-  inputState = newInputState;
-  
+}
+
+void moveSnake() {
   snake.head = movePosition(snake.head, snake.dir);
   
   if (boardState[snake.head.row][snake.head.col].type == blank || boardState[snake.head.row][snake.head.col].type == greenSnake) {
@@ -188,6 +248,3 @@ void addFood() {
     }
   }
 }
-
-
-
